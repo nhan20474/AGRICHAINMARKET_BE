@@ -1,0 +1,41 @@
+{
+  "_format": "hh-sol-cache-2",
+  "files": {
+    "D:\\Đồ án chuyên ngành CNTT\\DoAnChuyenNganh_Backend\\do_an_chuyen_nganh_backend\\blockchain\\contracts\\AgriChain.sol": {
+      "lastModificationDate": 1764415388793,
+      "contentHash": "ae53943dac394fc4b9872eca8ed82154",
+      "sourceName": "contracts/AgriChain.sol",
+      "solcConfig": {
+        "version": "0.8.24",
+        "settings": {
+          "evmVersion": "paris",
+          "optimizer": {
+            "enabled": false,
+            "runs": 200
+          },
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [],
+      "versionPragmas": [
+        "^0.8.0"
+      ],
+      "artifacts": [
+        "AgriChain"
+      ]
+    }
+  }
+}

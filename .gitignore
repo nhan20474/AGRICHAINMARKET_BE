@@ -1,0 +1,18 @@
+# Environment variables - QUAN TRỌNG!
+.env
+.env.local
+.env.production
+
+# Node modules
+node_modules/
+
+# Logs
+*.log
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Uploads
+uploads/
