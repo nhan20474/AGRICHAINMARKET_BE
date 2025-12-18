@@ -69,6 +69,10 @@ exports.login = async (req, res) => {
       return res.status(401).json({ error: 'Password khong dung' });
     }
 
+    if (user.rows[0].is_locked) {
+        return res.status(403).json({ message: "Tài khoản của bạn đã bị khóa." });
+    }
+
     // Tao JWT token
     const token = jwt.sign(
       { 
