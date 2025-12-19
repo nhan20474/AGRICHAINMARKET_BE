@@ -129,6 +129,9 @@ CREATE TABLE Provenance (
     FOREIGN KEY (product_id) REFERENCES Products(id) ON DELETE SET NULL -- SỬA: SET NULL
 );
 
+-- Đảm bảo product_id là duy nhất (phục vụ ON CONFLICT khi ghi log blockchain)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_provenance_product_id ON Provenance(product_id);
+
 -- 8. FarmerApplications
 CREATE TABLE FarmerApplications (
     id SERIAL PRIMARY KEY,
@@ -142,6 +145,9 @@ CREATE TABLE FarmerApplications (
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES Users(id) ON DELETE CASCADE
 );
+
+-- Đảm bảo user_id là duy nhất (phòng trường hợp migrate DB cũ không có unique)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_farmer_applications_user_id ON FarmerApplications(user_id);
 
 -- 9. Notifications
 CREATE TABLE Notifications (

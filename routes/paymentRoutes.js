@@ -28,7 +28,7 @@ const sendRealtimeNotification = (req, userId, notificationData) => {
 // ============================================================
 router.post('/momo/create-payment', async (req, res) => {
     // SỬA: Nhận cả order_id và orderId (tùy frontend gửi cái nào)
-    const { order_id, orderId, amount: frontendAmount, orderInfo: frontendOrderInfo } = req.body;
+    const { order_id, orderId, amount: frontendAmount, orderInfo: frontendOrderInfo, total_amount } = req.body;
     
     // Lấy order_id (ưu tiên order_id, fallback sang orderId)
     const realOrderId = order_id || orderId;
@@ -73,8 +73,13 @@ router.post('/momo/create-payment', async (req, res) => {
             return res.status(400).json({ error: 'Đơn hàng đã bị hủy, không thể thanh toán' });
         }
 
-        // Lấy amount từ DB (KHÔNG tin tưởng frontend)
-        const amount = Math.round(parseFloat(order.total_amount)).toString();
+        // SỬA: Lấy amount từ req.body.total_amount nếu có, ưu tiên FE gửi lên, fallback sang DB
+        let amount;
+        if (typeof total_amount !== 'undefined' && !isNaN(Number(total_amount))) {
+            amount = Math.round(Number(total_amount)).toString();
+        } else {
+            amount = Math.round(parseFloat(order.total_amount)).toString();
+        }
 
         console.log('📦 Order info:', {
             order_id: order.id,
