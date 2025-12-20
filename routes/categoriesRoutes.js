@@ -77,21 +77,32 @@ router.put('/:id', async (req, res) => {
 
 // 5. Xóa danh mục (DELETE)
 router.delete('/:id', async (req, res) => {
-  try {
-    const result = await pool.query(
-      'DELETE FROM Categories WHERE id=$1 RETURNING *', 
-      [req.params.id]
-    );
+    const { id } = req.params;
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Khong tim thay danh muc' });
+    try {
+        // 1️⃣ Kiểm tra còn sản phẩm không
+        const check = await pool.query(
+            'SELECT COUNT(*) FROM Products WHERE category_id = $1',
+            [id]
+        );
+
+        const productCount = Number(check.rows[0].count);
+
+        if (productCount > 0) {
+            return res.status(400).json({
+                error: `Không thể xóa. Danh mục đang có ${productCount} sản phẩm`
+            });
+        }
+
+        // 2️⃣ Xóa danh mục
+        await pool.query('DELETE FROM Categories WHERE id = $1', [id]);
+
+        res.json({ message: 'Xóa danh mục thành công' });
+
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Lỗi xóa danh mục' });
     }
-    
-    // Giữ cấu trúc trả về giống file products.js
-    res.json({ message: 'Xoa thanh cong', category: result.rows[0] }); 
-  } catch (err) {
-    res.status(500).json({ error: 'Loi xoa danh muc' });
-  }
 });
 
 module.exports = router;

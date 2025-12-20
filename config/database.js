@@ -5,7 +5,7 @@ const pool = new Pool({
   user: 'postgres',                    // Ten user PostgreSQL (mac dinh la postgres)
   host: 'localhost',                   // Dia chi server
   database: 'do_an_chuyen_nganh',     // Ten database tu pgAdmin cua ban
-  password: '1',      // Mat khau ban dat khi cai PostgreSQL
+  password: 'phuocloc7824',      // Mat khau ban dat khi cai PostgreSQL
   port: 5432,                          // Cong mac dinh cua PostgreSQL
 });
 

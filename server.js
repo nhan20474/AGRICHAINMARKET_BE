@@ -21,6 +21,7 @@ const paymentRoutes = require('./routes/paymentRoutes');
 const panelRoutes = require('./routes/admin_panels'); 
 const discountRoutes = require('./routes/discountRoutes');
 const reportsRoutes = require('./routes/reports');
+const adminOrderRoutes = require('./routes/admin_order');
 const http = require('http');
 const socketio = require('socket.io');
 
@@ -90,7 +91,7 @@ app.use('/api/profile', profileRoutes);
 app.use('/api/cart', cartRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/categories', categoriesRouter);
-app.use('/api/admin', adminApprovalRouter);
+app.use('/api/admin', adminApprovalRouter, adminOrderRoutes);
 app.use('/api/admin/users', adminUserRouter);
 app.use('/api/search', searchRouter);
 app.use('/api/upload', uploadRoutes);
