@@ -200,4 +200,35 @@ router.get('/dashboard-stats', async (req, res) => {
     }
 });
 
+// =============================
+// API DASHBOARD ADMIN
+// =============================
+router.get('/admin/dashboard', async (req, res) => {
+    try {
+        const [revenueRes, orderRes, userRes, sellerRes, buyerRes, productRes, lowStockRes] = await Promise.all([
+            pool.query(`SELECT COALESCE(SUM(total_amount),0) as total_revenue FROM Orders WHERE status IN ('delivered','received')`),
+            pool.query(`SELECT COUNT(id) as total_orders, SUM(CASE WHEN status='delivered' OR status='received' THEN 1 ELSE 0 END) as completed_orders, SUM(CASE WHEN status='cancelled' THEN 1 ELSE 0 END) as cancelled_orders, SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) as pending_orders FROM Orders`),
+            pool.query(`SELECT COUNT(id) as total_users FROM Users`),
+            pool.query(`SELECT COUNT(id) as total_sellers FROM Users WHERE role='seller'`),
+            pool.query(`SELECT COUNT(id) as total_buyers FROM Users WHERE role='buyer'`),
+            pool.query(`SELECT COUNT(id) as total_products FROM Products WHERE status != 'deleted'`),
+            pool.query(`SELECT COUNT(id) as low_stock_products FROM Products WHERE quantity <= 10 AND status != 'deleted'`)
+        ]);
+        res.json({
+            total_revenue: Number(revenueRes.rows[0].total_revenue),
+            total_orders: Number(orderRes.rows[0].total_orders),
+            completed_orders: Number(orderRes.rows[0].completed_orders),
+            cancelled_orders: Number(orderRes.rows[0].cancelled_orders),
+            pending_orders: Number(orderRes.rows[0].pending_orders),
+            total_users: Number(userRes.rows[0].total_users),
+            total_sellers: Number(sellerRes.rows[0].total_sellers),
+            total_buyers: Number(buyerRes.rows[0].total_buyers),
+            total_products: Number(productRes.rows[0].total_products),
+            low_stock_products: Number(lowStockRes.rows[0].low_stock_products)
+        });
+    } catch (err) {
+        res.status(500).json({ error: 'Lỗi lấy thống kê dashboard admin', detail: err.message });
+    }
+});
+
 module.exports = router;

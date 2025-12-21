@@ -29,7 +29,6 @@ const sendRealtimeNotification = (req, userId, notificationData) => {
 router.post('/momo/create-payment', async (req, res) => {
     // SỬA: Nhận cả order_id và orderId (tùy frontend gửi cái nào)
     const { order_id, orderId, amount: frontendAmount, orderInfo: frontendOrderInfo, total_amount } = req.body;
-    
     // Lấy order_id (ưu tiên order_id, fallback sang orderId)
     const realOrderId = order_id || orderId;
 
@@ -42,11 +41,18 @@ router.post('/momo/create-payment', async (req, res) => {
     });
 
     // Validation chặt chẽ hơn
-    if (!realOrderId) {
+    if (!realOrderId || isNaN(Number(realOrderId))) {
         return res.status(400).json({ 
-            error: 'Thiếu order_id hoặc orderId',
+            error: 'Thiếu hoặc sai order_id/orderId',
             received: { order_id, orderId },
-            hint: 'Frontend phải gửi { order_id: 123 } hoặc { orderId: 123 }'
+            hint: 'Frontend phải gửi { order_id: 123 } hoặc { orderId: 123 } (số hợp lệ)'
+        });
+    }
+    if (typeof total_amount === 'undefined' || isNaN(Number(total_amount)) || Number(total_amount) < 1000 || Number(total_amount) > 50000000) {
+        return res.status(400).json({
+            error: 'Số tiền thanh toán không hợp lệ',
+            received: { total_amount },
+            hint: 'total_amount phải là số từ 1,000 đến 50,000,000 VNĐ'
         });
     }
 

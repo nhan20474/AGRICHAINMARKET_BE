@@ -181,10 +181,20 @@ router.post('/:userId', async (req, res) => {
                 const productRes = await client.query('SELECT * FROM Products WHERE id = $1', [item.product_id]);
                 const product = productRes.rows[0];
 
+                // Lấy giá bán thực tế tại thời điểm mua (ưu tiên sale_price nếu có và khác null, fallback sang price)
+                let basePrice = Number(product.price);
+                if ('sale_price' in product && product.sale_price !== null && product.sale_price !== undefined) {
+                    basePrice = Number(product.sale_price);
+                }
+                // Tính giá đã giảm cho từng item
+                const discountedPrice = discountPercent > 0
+                    ? Math.round(basePrice * (1 - discountPercent / 100))
+                    : basePrice;
+
                 await client.query(
                     `INSERT INTO OrderItems (order_id, product_id, quantity, price_per_item, product_name, product_image_url)
                      VALUES ($1, $2, $3, $4, $5, $6)`,
-                    [orderId, item.product_id, item.quantity, product.price, product.name, product.image_url]
+                    [orderId, item.product_id, item.quantity, discountedPrice, product.name, product.image_url]
                 );
 
                 const newQuantity = product.quantity - item.quantity;
@@ -276,7 +286,6 @@ router.post('/:userId', async (req, res) => {
              VALUES (1, NULL, 'system', '💰 Đơn hàng mới', $1, NOW()) RETURNING *`,
             [`Người dùng #${userId} vừa đặt ${createdOrders.length} đơn hàng. Tổng tiền: ${createdOrders.reduce((a,b)=>a+b.total_amount,0)}đ`]
         );
-        sendRealtimeNotification(req, 1, adminNoti.rows[0]);
 
         const buyerNoti = await client.query(
             `INSERT INTO Notifications (user_id, sender_id, type, title, message, created_at)
@@ -563,7 +572,7 @@ router.get('/:userId', async (req, res) => {
         const orderList = [];
         
         for (const order of orders.rows) {
-            // SỬA: Query sử dụng LEFT JOIN và COALESCE để xử lý sản phẩm đã xóa
+            // Query sản phẩm trong đơn
             const items = await pool.query(
                 `SELECT oi.*, 
                         COALESCE(p.name, oi.product_name, '[Sản phẩm đã bị xóa]') as name,
@@ -577,6 +586,9 @@ router.get('/:userId', async (req, res) => {
                  WHERE oi.order_id = $1`,
                 [order.id]
             );
+
+            // TÍNH LẠI TỔNG CỘNG THEO GIÁ LỊCH SỬ
+            const total_amount = items.rows.reduce((sum, item) => sum + (Number(item.price_per_item) * Number(item.quantity)), 0);
 
             const paymentResult = await pool.query(
                 `SELECT * FROM Payments WHERE order_id = $1`,
@@ -592,7 +604,8 @@ router.get('/:userId', async (req, res) => {
                 ...order, 
                 items: items.rows,
                 payment: paymentResult.rows.length > 0 ? paymentResult.rows[0] : null,
-                buyer: buyerResult.rows.length > 0 ? buyerResult.rows[0] : null
+                buyer: buyerResult.rows.length > 0 ? buyerResult.rows[0] : null,
+                total_amount // tổng cộng thực tế (giá lịch sử)
             });
         }
         
@@ -610,9 +623,14 @@ router.get('/detail/:orderId', async (req, res) => {
         if (order.rows.length === 0) return res.status(404).json({ error: 'Không tìm thấy đơn hàng' });
 
         const items = await pool.query(
-            `SELECT oi.*, p.name, p.image_url, p.seller_id
+            `SELECT oi.*, 
+                    COALESCE(p.name, oi.product_name, '[Sản phẩm đã bị xóa]') as name,
+                    COALESCE(p.image_url, oi.product_image_url) as image_url,
+                    oi.price_per_item, -- giá lịch sử
+                    p.price as current_price, -- giá hiện tại
+                    p.seller_id
              FROM OrderItems oi
-             JOIN Products p ON oi.product_id = p.id
+             LEFT JOIN Products p ON oi.product_id = p.id
              WHERE oi.order_id = $1`,
             [req.params.orderId]
         );
@@ -645,13 +663,20 @@ router.get('/history/:userId', async (req, res) => {
         const orderList = [];
         for (const order of orders.rows) {
             const items = await pool.query(
-                `SELECT oi.*, p.name, p.image_url, p.seller_id
+                `SELECT oi.*, 
+                        COALESCE(p.name, oi.product_name, '[Sản phẩm đã bị xóa]') as name,
+                        COALESCE(p.image_url, oi.product_image_url) as image_url,
+                        oi.price_per_item, -- giá lịch sử
+                        p.price as current_price, -- giá hiện tại
+                        p.seller_id
                  FROM OrderItems oi
-                 JOIN Products p ON oi.product_id = p.id
+                 LEFT JOIN Products p ON oi.product_id = p.id
                  WHERE oi.order_id = $1`,
                 [order.id]
             );
-            orderList.push({ order, items: items.rows });
+            // TÍNH LẠI TỔNG CỘNG THEO GIÁ LỊCH SỬ
+            const total_amount = items.rows.reduce((sum, item) => sum + (Number(item.price_per_item) * Number(item.quantity)), 0);
+            orderList.push({ order: { ...order, total_amount }, items: items.rows });
         }
         res.json(orderList);
     } catch (err) {
