@@ -241,33 +241,70 @@ CREATE TABLE Discounts (
 );
 
 -- 15. Reports (Báo cáo thống kê)
+DROP TABLE IF EXISTS Reports CASCADE;
+
 CREATE TABLE Reports (
     id SERIAL PRIMARY KEY,
-    report_date DATE NOT NULL,
-    seller_id INT,    -- NULL = Admin (Toàn sàn), Có ID = Farmer
-    product_id INT,   -- (Tùy chọn mở rộng sau này, hiện tại để NULL cho báo cáo tổng)
-    
-    total_orders INT DEFAULT 0,
-    total_quantity INT DEFAULT 0,
-    total_revenue DECIMAL(12,2) DEFAULT 0,
-    total_discount DECIMAL(12,2) DEFAULT 0,
-    
-    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-    
-    FOREIGN KEY (seller_id) REFERENCES Users(id) ON DELETE SET NULL,
-    FOREIGN KEY (product_id) REFERENCES Products(id) ON DELETE SET NULL,
 
-    -- Ràng buộc quan trọng: 1 Ngày - 1 Seller chỉ có 1 dòng báo cáo tổng
-    -- (Lưu ý: Trong Postgres, NULL != NULL ở ràng buộc UNIQUE, 
-    -- nhưng logic code Backend của mình đã xử lý việc xóa cũ trước khi thêm mới cho Admin rồi nên yên tâm)
-    CONSTRAINT unique_daily_report UNIQUE (report_date, seller_id)
+    report_date DATE NOT NULL,
+
+    seller_id INT NULL,      -- NULL = Admin
+    product_id INT NULL,     -- mở rộng sau
+
+    total_orders INT NOT NULL DEFAULT 0,
+    total_quantity INT NOT NULL DEFAULT 0,
+    total_revenue DECIMAL(12,2) NOT NULL DEFAULT 0,
+    total_discount DECIMAL(12,2) NOT NULL DEFAULT 0,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT fk_reports_seller
+        FOREIGN KEY (seller_id)
+        REFERENCES Users(id)
+        ON DELETE SET NULL,
+
+    CONSTRAINT fk_reports_product
+        FOREIGN KEY (product_id)
+        REFERENCES Products(id)
+        ON DELETE SET NULL,
+
+    CONSTRAINT chk_reports_orders CHECK (total_orders >= 0),
+    CONSTRAINT chk_reports_quantity CHECK (total_quantity >= 0),
+    CONSTRAINT chk_reports_revenue CHECK (total_revenue >= 0),
+    CONSTRAINT chk_reports_discount CHECK (total_discount >= 0)
 );
 
+-- Seller: 1 ngày – 1 seller – 1 dòng
+CREATE UNIQUE INDEX unique_daily_seller_report
+ON Reports (report_date, seller_id)
+WHERE seller_id IS NOT NULL;
+
+-- Admin: 1 ngày – 1 dòng
+CREATE UNIQUE INDEX unique_daily_admin_report
+ON Reports (report_date)
+WHERE seller_id IS NULL AND product_id IS NULL;
+
+
 -- Index để query nhanh theo ngày và seller
-CREATE INDEX idx_reports_date ON Reports(report_date);
-CREATE INDEX idx_reports_seller ON Reports(seller_id);
-CREATE INDEX idx_reports_product ON Reports(product_id);
+CREATE INDEX idx_reports_date ON Reports (report_date);
+CREATE INDEX idx_reports_seller ON Reports (seller_id);
+CREATE INDEX idx_reports_product ON Reports (product_id);
+CREATE INDEX idx_reports_date_seller ON Reports (report_date, seller_id);
+
+CREATE OR REPLACE FUNCTION update_reports_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_reports_updated_at
+BEFORE UPDATE ON Reports
+FOR EACH ROW
+EXECUTE FUNCTION update_reports_updated_at();
+
 
 -- Indexes
 CREATE INDEX idx_reviews_product ON Reviews(product_id);

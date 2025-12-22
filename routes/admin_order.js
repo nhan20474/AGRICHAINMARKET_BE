@@ -54,13 +54,19 @@ router.get('/orders/statistics', async (req, res) => {
    Lấy toàn bộ đơn hàng trên sàn
 ===================================================== */
 router.get('/orders', async (req, res) => {
-  const { admin_id, status } = req.query;
-
-  if (!(await checkAdmin(admin_id))) {
-    return res.status(403).json({ error: 'Không có quyền admin' });
-  }
-
   try {
+    const { admin_id, status, limit } = req.query;
+
+    const adminId = Number(admin_id);
+    if (!Number.isInteger(adminId)) {
+      return res.status(400).json({ error: 'admin_id không hợp lệ' });
+    }
+
+
+    if (!(await checkAdmin(adminId))) {
+      return res.status(403).json({ error: 'Không có quyền admin' });
+    }
+
     let query = `
       SELECT
         o.id,
@@ -74,6 +80,7 @@ router.get('/orders', async (req, res) => {
       LEFT JOIN Users seller ON o.seller_id = seller.id
       WHERE 1=1
     `;
+
     const params = [];
 
     if (status) {
@@ -83,11 +90,20 @@ router.get('/orders', async (req, res) => {
 
     query += ' ORDER BY o.created_at DESC';
 
+    if (limit) {
+      params.push(Number(limit));
+      query += ` LIMIT $${params.length}`;
+    }
+
     const { rows } = await pool.query(query, params);
     res.json(rows);
+
   } catch (err) {
-    console.error('Get orders error:', err.message);
-    res.status(500).json({ error: 'Không thể lấy danh sách đơn hàng', details: err.message });
+    console.error('Get orders error:', err);
+    res.status(500).json({
+      error: 'Không thể lấy danh sách đơn hàng',
+      details: err.message
+    });
   }
 });
 
