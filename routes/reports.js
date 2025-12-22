@@ -70,16 +70,19 @@ router.post('/sync', async (req, res) => {
 
         const a = adminStats.rows[0];
 
-        await client.query(`
-            INSERT INTO Reports
-            (report_date, seller_id, total_orders, total_quantity, total_revenue, total_discount)
-            VALUES ($1,NULL,$2,$3,$4,$5)
-            ON CONFLICT ON CONSTRAINT unique_daily_admin_report
-            DO UPDATE SET
-                total_orders = EXCLUDED.total_orders,
-                total_quantity = EXCLUDED.total_quantity,
-                total_revenue = EXCLUDED.total_revenue,
-                total_discount = EXCLUDED.total_discount
+        // Partial unique index `unique_daily_admin_report` was created with
+        // a WHERE predicate. `ON CONFLICT ON CONSTRAINT` expects a named
+        // unique constraint, so referencing the index name here can fail
+        // with a runtime error. Use UPDATE-then-INSERT as a safe upsert
+        // which works with the partial unique index predicate.
+        const updRes = await client.query(`
+            UPDATE Reports
+            SET total_orders = $2,
+                total_quantity = $3,
+                total_revenue = $4,
+                total_discount = $5,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE report_date = $1 AND seller_id IS NULL AND product_id IS NULL
         `, [
             targetDate,
             a.total_orders,
@@ -87,6 +90,20 @@ router.post('/sync', async (req, res) => {
             a.total_revenue,
             a.total_discount
         ]);
+
+        if (updRes.rowCount === 0) {
+            await client.query(`
+                INSERT INTO Reports
+                (report_date, seller_id, total_orders, total_quantity, total_revenue, total_discount)
+                VALUES ($1, NULL, $2, $3, $4, $5)
+            `, [
+                targetDate,
+                a.total_orders,
+                a.total_quantity,
+                a.total_revenue,
+                a.total_discount
+            ]);
+        }
 
         await client.query('COMMIT');
         res.json({ message: `Sync report ${targetDate} OK` });
