@@ -241,8 +241,6 @@ CREATE TABLE Discounts (
 );
 
 -- 15. Reports (Báo cáo thống kê)
-DROP TABLE IF EXISTS Reports CASCADE;
-
 CREATE TABLE Reports (
     id SERIAL PRIMARY KEY,
 
@@ -250,6 +248,8 @@ CREATE TABLE Reports (
 
     seller_id INT NULL,      -- NULL = Admin
     product_id INT NULL,     -- mở rộng sau
+
+    report_type VARCHAR(20) DEFAULT 'daily',
 
     total_orders INT NOT NULL DEFAULT 0,
     total_quantity INT NOT NULL DEFAULT 0,
@@ -261,12 +261,12 @@ CREATE TABLE Reports (
 
     CONSTRAINT fk_reports_seller
         FOREIGN KEY (seller_id)
-        REFERENCES Users(id)
+        REFERENCES users(id)
         ON DELETE SET NULL,
 
     CONSTRAINT fk_reports_product
         FOREIGN KEY (product_id)
-        REFERENCES Products(id)
+        REFERENCES products(id)
         ON DELETE SET NULL,
 
     CONSTRAINT chk_reports_orders CHECK (total_orders >= 0),
@@ -277,20 +277,29 @@ CREATE TABLE Reports (
 
 -- Seller: 1 ngày – 1 seller – 1 dòng
 CREATE UNIQUE INDEX unique_daily_seller_report
-ON Reports (report_date, seller_id)
+ON reports (report_date, seller_id)
 WHERE seller_id IS NOT NULL;
 
 -- Admin: 1 ngày – 1 dòng
 CREATE UNIQUE INDEX unique_daily_admin_report
-ON Reports (report_date)
+ON reports (report_date)
 WHERE seller_id IS NULL AND product_id IS NULL;
+
+-- Thêm index cho query nhanh theo admin + product (top product)
+CREATE INDEX idx_reports_admin_product
+ON reports (report_date, product_id)
+WHERE seller_id IS NULL AND product_id IS NOT NULL;
+
+-- Index tổng hợp cho trend (Admin hoặc Seller)
+CREATE INDEX idx_reports_date_seller_product
+ON reports (report_date, seller_id, product_id);
 
 
 -- Index để query nhanh theo ngày và seller
-CREATE INDEX idx_reports_date ON Reports (report_date);
-CREATE INDEX idx_reports_seller ON Reports (seller_id);
-CREATE INDEX idx_reports_product ON Reports (product_id);
-CREATE INDEX idx_reports_date_seller ON Reports (report_date, seller_id);
+CREATE INDEX idx_reports_date ON reports (report_date);
+CREATE INDEX idx_reports_seller ON reports (seller_id);
+CREATE INDEX idx_reports_product ON reports (product_id);
+CREATE INDEX idx_reports_date_seller ON reports (report_date, seller_id);
 
 CREATE OR REPLACE FUNCTION update_reports_updated_at()
 RETURNS TRIGGER AS $$

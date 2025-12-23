@@ -20,27 +20,27 @@ const sendRealtimeNotification = (req, userId, notificationData) => {
 };
 
 // --- HELPER: Cập nhật báo cáo cho 1 Seller vào 1 ngày cụ thể ---
+// --- HELPER: Cập nhật báo cáo cho 1 Seller vào 1 ngày ---
 const updateDailyReport = async (client, sellerId) => {
     const today = new Date().toISOString().split('T')[0];
-    
-    // 1. Xóa báo cáo cũ của ngày hôm nay (để tính lại)
+
+    // 1. Xóa báo cáo cũ của ngày hôm nay
     await client.query(
-        `DELETE FROM Reports WHERE report_date = $1 AND seller_id = $2`, 
+        `DELETE FROM Reports WHERE report_date = $1 AND seller_id = $2`,
         [today, sellerId]
     );
 
-    // 2. Tính toán lại số liệu từ các đơn đã thành công
+    // 2. Tính toán lại số liệu từ các đơn đã thành công của seller
     const statsRes = await client.query(`
         SELECT 
-            COUNT(DISTINCT o.id) as total_orders,
-            COALESCE(SUM(o.total_amount), 0) as total_revenue,
-            COALESCE(SUM(o.discount_amount), 0) as total_discount,
-            COALESCE(SUM(oi.quantity), 0) as total_quantity
-        FROM Orders o
-        LEFT JOIN OrderItems oi ON o.id = oi.order_id
-        WHERE DATE(o.created_at) = $1 
-          AND o.seller_id = $2
-          AND o.status IN ('delivered', 'received') -- Chỉ tính đơn thành công
+            COUNT(id) as total_orders,
+            COALESCE(SUM(total_amount), 0) as total_revenue,
+            COALESCE(SUM(discount_amount), 0) as total_discount,
+            COALESCE(SUM(total_quantity), 0) as total_quantity
+        FROM Orders
+        WHERE DATE(created_at) = $1
+          AND seller_id = $2
+          AND status IN ('delivered', 'received')
     `, [today, sellerId]);
 
     const stats = statsRes.rows[0];
@@ -51,7 +51,7 @@ const updateDailyReport = async (client, sellerId) => {
             INSERT INTO Reports (report_date, seller_id, total_orders, total_revenue, total_discount, total_quantity)
             VALUES ($1, $2, $3, $4, $5, $6)
         `, [today, sellerId, stats.total_orders, stats.total_revenue, stats.total_discount, stats.total_quantity]);
-        
+
         console.log(`📊 Đã cập nhật báo cáo ngày ${today} cho seller #${sellerId}`);
     }
 };
