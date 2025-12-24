@@ -4,7 +4,7 @@ const pool = require('../config/database');
 const emailService = require('../services/emailService');
 const crypto = require('crypto');
 
-const SECRET_KEY = 'your_secret_key_here_change_in_production';
+const SECRET_KEY = process.env.JWT_SECRET || 'your_secret_key_here_change_in_production';
 
 // Dang ky
 exports.register = async (req, res) => {

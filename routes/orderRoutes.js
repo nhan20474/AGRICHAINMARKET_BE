@@ -19,58 +19,20 @@ const sendRealtimeNotification = (req, userId, notificationData) => {
     }
 };
 
-// --- HELPER: Cập nhật báo cáo cho 1 Seller vào 1 ngày cụ thể ---
-// --- HELPER: Cập nhật báo cáo cho 1 Seller vào 1 ngày ---
-const updateDailyReport = async (client, sellerId) => {
-    const today = new Date().toISOString().split('T')[0];
-
-    // 1. Xóa báo cáo cũ của ngày hôm nay
-    await client.query(
-        `DELETE FROM Reports WHERE report_date = $1 AND seller_id = $2`,
-        [today, sellerId]
-    );
-
-    // 2. Tính toán lại số liệu từ các đơn đã thành công của seller
-    const statsRes = await client.query(`
-        SELECT 
-            COUNT(id) as total_orders,
-            COALESCE(SUM(total_amount), 0) as total_revenue,
-            COALESCE(SUM(discount_amount), 0) as total_discount,
-            COALESCE(SUM(total_quantity), 0) as total_quantity
-        FROM Orders
-        WHERE DATE(created_at) = $1
-          AND seller_id = $2
-          AND status IN ('delivered', 'received')
-    `, [today, sellerId]);
-
-    const stats = statsRes.rows[0];
-
-    // 3. Ghi vào bảng Reports
-    if (Number(stats.total_orders) > 0) {
-        await client.query(`
-            INSERT INTO Reports (report_date, seller_id, total_orders, total_revenue, total_discount, total_quantity)
-            VALUES ($1, $2, $3, $4, $5, $6)
-        `, [today, sellerId, stats.total_orders, stats.total_revenue, stats.total_discount, stats.total_quantity]);
-
-        console.log(`📊 Đã cập nhật báo cáo ngày ${today} cho seller #${sellerId}`);
-    }
-};
-
 // ============================================================
-// 1. TẠO ĐƠN HÀNG MỚI (TÁCH THEO SELLER) - TÍCH HỢP MOMO & DISCOUNT
+// 1. TẠO ĐƠN HÀNG MỚI (TÁCH THEO SELLER) - TÍCH HỢP MOMO
 // ============================================================
 router.post('/:userId', async (req, res) => {
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
 
-        // Nhận thêm discount_code từ body
-        const { shipping_address, payment_method, discount_code } = req.body;
+        const { shipping_address, payment_method } = req.body;
         const userId = req.params.userId;
 
-        console.log('📦 Đang tạo đơn hàng:', { payment_method, discount_code });
+        console.log('📦 Đang tạo đơn hàng với payment_method:', payment_method);
 
-        // 1. Lấy giỏ hàng KÈM THEO seller_id (GIỮ NGUYÊN)
+        // 1. Lấy giỏ hàng KÈM THEO seller_id
         const cartRes = await client.query(
             `SELECT c.product_id, SUM(c.quantity) as quantity, p.seller_id
              FROM CartItems c
@@ -84,8 +46,9 @@ router.post('/:userId', async (req, res) => {
             throw new Error('Giỏ hàng trống, không thể tạo đơn hàng.');
         }
 
-        // 2. NHÓM SẢN PHẨM THEO SELLER (GIỮ NGUYÊN)
+        // 2. NHÓM SẢN PHẨM THEO SELLER
         const groupedBySeller = {};
+        
         for (const item of cartRes.rows) {
             const sellerId = item.seller_id;
             if (!groupedBySeller[sellerId]) {
@@ -96,45 +59,14 @@ router.post('/:userId', async (req, res) => {
 
         console.log(`🛒 Giỏ hàng có sản phẩm từ ${Object.keys(groupedBySeller).length} farmer khác nhau`);
 
-        // --- (MỚI) LOGIC KIỂM TRA MÃ GIẢM GIÁ ---
-        let discountPercent = 0;
-        let discountId = null;
-
-        if (discount_code) {
-            const discountRes = await client.query(
-                `SELECT * FROM Discounts WHERE code = $1`, 
-                [discount_code.toUpperCase()]
-            );
-
-            if (discountRes.rows.length > 0) {
-                const discount = discountRes.rows[0];
-                const now = new Date();
-
-                // Validate chặt chẽ: Còn hoạt động + Trong thời hạn + Còn lượt dùng
-                if (discount.is_active && 
-                    now >= new Date(discount.start_date) && 
-                    now <= new Date(discount.end_date) && 
-                    discount.used_count < discount.usage_limit) {
-                    
-                    discountPercent = discount.discount_percent;
-                    discountId = discount.id;
-                    console.log(`✅ Áp dụng mã ${discount_code}: Giảm ${discountPercent}%`);
-                } else {
-                    console.warn(`⚠️ Mã ${discount_code} không hợp lệ hoặc hết hạn.`);
-                    // (Tùy chọn: Có thể throw Error ở đây nếu muốn chặn đơn hàng khi mã sai)
-                }
-            }
-        }
-        // ----------------------------------------
-
-        const createdOrders = []; 
+        const createdOrders = []; // Lưu các đơn hàng đã tạo
 
         // 3. TẠO TỪNG ĐƠN HÀNG CHO MỖI SELLER
         for (const [sellerId, items] of Object.entries(groupedBySeller)) {
             let totalAmount = 0;
             const notificationsToSend = [];
 
-            // 3a. Kiểm tra tồn kho và tính tổng tiền (GIỮ NGUYÊN)
+            // 3a. Kiểm tra tồn kho và tính tổng tiền
             for (const item of items) {
                 const productRes = await client.query(
                     `SELECT id, name, price, quantity, status, unit FROM Products WHERE id = $1 FOR UPDATE`, 
@@ -154,49 +86,28 @@ router.post('/:userId', async (req, res) => {
                 totalAmount += Number(product.price) * item.quantity;
             }
 
-            // --- (MỚI) ÁP DỤNG GIẢM GIÁ VÀO TIỀN ---
-            // Tính số tiền được giảm cho đơn hàng con này
-            const discountAmount = (totalAmount * discountPercent) / 100;
-            const finalAmount = totalAmount - discountAmount;
-
-            // 3b. Tạo đơn hàng (GIỮ NGUYÊN LOGIC, CHỈ THÊM CỘT DISCOUNT)
-            // Lưu ý: Cần đảm bảo bảng Orders đã có cột discount_amount và discount_code (như hướng dẫn SQL trước)
+            // 3b. Tạo đơn hàng
             const orderRes = await client.query(
-                `INSERT INTO Orders (
-                    buyer_id, seller_id, total_amount, discount_amount, discount_code, 
-                    shipping_address, status, created_at
-                 )
-                 VALUES ($1, $2, $3, $4, $5, $6, 'pending', NOW())
+                `INSERT INTO Orders (buyer_id, seller_id, total_amount, shipping_address, status, created_at)
+                 VALUES ($1, $2, $3, $4, 'pending', NOW())
                  RETURNING id`,
-                [
-                    userId, sellerId, finalAmount, // Lưu giá sau giảm
-                    discountAmount, discount_code || null, // Lưu thông tin giảm
-                    shipping_address
-                ]
+                [userId, sellerId, totalAmount, shipping_address]
             );
             const orderId = orderRes.rows[0].id;
 
-            // 3c. Xử lý từng sản phẩm (OrderItems, Update Stock, ShippingInfo...) -> (GIỮ NGUYÊN HOÀN TOÀN)
+            // 3c. Xử lý từng sản phẩm
             for (const item of items) {
                 const productRes = await client.query('SELECT * FROM Products WHERE id = $1', [item.product_id]);
                 const product = productRes.rows[0];
 
-                // Lấy giá bán thực tế tại thời điểm mua (ưu tiên sale_price nếu có và khác null, fallback sang price)
-                let basePrice = Number(product.price);
-                if ('sale_price' in product && product.sale_price !== null && product.sale_price !== undefined) {
-                    basePrice = Number(product.sale_price);
-                }
-                // Tính giá đã giảm cho từng item
-                const discountedPrice = discountPercent > 0
-                    ? Math.round(basePrice * (1 - discountPercent / 100))
-                    : basePrice;
-
+                // SỬA: Lưu vào OrderItems KÈM THEO tên và ảnh sản phẩm
                 await client.query(
                     `INSERT INTO OrderItems (order_id, product_id, quantity, price_per_item, product_name, product_image_url)
                      VALUES ($1, $2, $3, $4, $5, $6)`,
-                    [orderId, item.product_id, item.quantity, discountedPrice, product.name, product.image_url]
+                    [orderId, item.product_id, item.quantity, product.price, product.name, product.image_url]
                 );
 
+                // Trừ tồn kho
                 const newQuantity = product.quantity - item.quantity;
                 let newStatus = 'available';
                 if (newQuantity <= 0) newStatus = 'out_of_stock';
@@ -206,12 +117,14 @@ router.post('/:userId', async (req, res) => {
                     [newQuantity, newStatus, item.product_id]
                 );
 
+                // Tạo ShippingInfo cho từng sản phẩm
                 await client.query(
                     `INSERT INTO ShippingInfo (order_id, product_id, shipping_status, updated_at)
                      VALUES ($1, $2, 'pending', NOW())`,
                     [orderId, item.product_id]
                 );
 
+                // Thông báo cho Seller
                 notificationsToSend.push({
                     user_id: product.seller_id,
                     sender_id: null,
@@ -222,6 +135,7 @@ router.post('/:userId', async (req, res) => {
                     order_id: orderId
                 });
 
+                // Cảnh báo sắp hết hàng
                 if (newQuantity <= 10) {
                     notificationsToSend.push({
                         user_id: product.seller_id,
@@ -234,7 +148,7 @@ router.post('/:userId', async (req, res) => {
                 }
             }
 
-            // 3d. Tạo payment record (Sử dụng finalAmount đã giảm giá)
+            // 3d. Tạo payment record
             let payment_status = 'pending';
             let transaction_id = null;
 
@@ -249,10 +163,10 @@ router.post('/:userId', async (req, res) => {
             await client.query(
                 `INSERT INTO Payments (order_id, payment_method, payment_status, amount, transaction_id, created_at)
                  VALUES ($1, $2, $3, $4, $5, NOW())`,
-                [orderId, payment_method || 'cod', payment_status, finalAmount, transaction_id]
+                [orderId, payment_method || 'cod', payment_status, totalAmount, transaction_id]
             );
 
-            // 3e. Lưu thông báo (GIỮ NGUYÊN)
+            // 3e. Lưu thông báo
             for (const noti of notificationsToSend) {
                 const res = await client.query(
                     `INSERT INTO Notifications (user_id, sender_id, type, title, message, product_id, order_id, created_at)
@@ -265,27 +179,20 @@ router.post('/:userId', async (req, res) => {
             createdOrders.push({
                 order_id: orderId,
                 seller_id: sellerId,
-                total_amount: finalAmount // Trả về giá đã giảm
+                total_amount: totalAmount
             });
         }
 
-        // --- (MỚI) CẬP NHẬT SỐ LƯỢT DÙNG MÃ GIẢM GIÁ ---
-        if (discountId) {
-            await client.query(
-                `UPDATE Discounts SET used_count = used_count + 1 WHERE id = $1`,
-                [discountId]
-            );
-        }
-
-        // 4. Xóa giỏ hàng (GIỮ NGUYÊN)
+        // 4. Xóa giỏ hàng
         await client.query('DELETE FROM CartItems WHERE user_id = $1', [userId]);
 
-        // 5. Thông báo chung (GIỮ NGUYÊN)
+        // 5. Thông báo cho Admin & Buyer
         const adminNoti = await client.query(
             `INSERT INTO Notifications (user_id, sender_id, type, title, message, created_at)
              VALUES (1, NULL, 'system', '💰 Đơn hàng mới', $1, NOW()) RETURNING *`,
-            [`Người dùng #${userId} vừa đặt ${createdOrders.length} đơn hàng. Tổng tiền: ${createdOrders.reduce((a,b)=>a+b.total_amount,0)}đ`]
+            [`Người dùng #${userId} vừa đặt ${createdOrders.length} đơn hàng từ ${createdOrders.length} farmer khác nhau.`]
         );
+        sendRealtimeNotification(req, 1, adminNoti.rows[0]);
 
         const buyerNoti = await client.query(
             `INSERT INTO Notifications (user_id, sender_id, type, title, message, created_at)
@@ -296,14 +203,14 @@ router.post('/:userId', async (req, res) => {
 
         await client.query('COMMIT');
 
-        // Trả về kết quả (GIỮ NGUYÊN)
+        // ✅ SỬA: Trả về cả order_id đầu tiên (để frontend dễ xử lý) và order_ids (mảng đầy đủ)
         res.status(201).json({ 
             success: true,
             message: 'Đặt hàng thành công', 
             orders: createdOrders,
-            order_id: createdOrders[0]?.order_id,
-            order_ids: createdOrders.map(o => o.order_id),
-            total_orders: createdOrders.length,
+            order_id: createdOrders[0]?.order_id, // ✅ THÊM: order_id đầu tiên
+            order_ids: createdOrders.map(o => o.order_id), // ✅ Mảng tất cả order_id
+            total_orders: createdOrders.length, // ✅ Số lượng đơn hàng
             payment_method: payment_method || 'cod'
         });
 
@@ -404,13 +311,6 @@ router.put('/:orderId/product/:productId/status', async (req, res) => {
             [orderStatus, orderId]
         );
 
-        // =========== ĐOẠN MỚI THÊM ===========
-        // Nếu đơn hàng chuyển sang 'delivered' hoặc 'received' -> Cập nhật doanh thu ngay
-        if (orderStatus === 'delivered' || orderStatus === 'received') {
-             // seller_id lấy từ body hoặc query trước đó
-             await updateDailyReport(client, seller_id); 
-        }
-
         console.log(`✅ Order #${orderId} → Status mới: ${orderStatus}`);
 
         // 5. Gửi thông báo cho BUYER
@@ -495,15 +395,6 @@ router.put('/:orderId/status', async (req, res) => {
             [status, orderId]
         );
 
-        // Lấy seller_id từ order đã query ở trên
-        const sellerId = order.seller_id; 
-
-        // =========== ĐOẠN MỚI THÊM ===========
-        if (status === 'received') {
-             await updateDailyReport(client, sellerId);
-        }
-        // =====================================
-
         // Đồng bộ ShippingInfo cho TẤT CẢ sản phẩm trong đơn
         await client.query(
             `UPDATE ShippingInfo 
@@ -572,7 +463,7 @@ router.get('/:userId', async (req, res) => {
         const orderList = [];
         
         for (const order of orders.rows) {
-            // Query sản phẩm trong đơn
+            // SỬA: Query sử dụng LEFT JOIN và COALESCE để xử lý sản phẩm đã xóa
             const items = await pool.query(
                 `SELECT oi.*, 
                         COALESCE(p.name, oi.product_name, '[Sản phẩm đã bị xóa]') as name,
@@ -586,9 +477,6 @@ router.get('/:userId', async (req, res) => {
                  WHERE oi.order_id = $1`,
                 [order.id]
             );
-
-            // TÍNH LẠI TỔNG CỘNG THEO GIÁ LỊCH SỬ
-            const total_amount = items.rows.reduce((sum, item) => sum + (Number(item.price_per_item) * Number(item.quantity)), 0);
 
             const paymentResult = await pool.query(
                 `SELECT * FROM Payments WHERE order_id = $1`,
@@ -604,8 +492,7 @@ router.get('/:userId', async (req, res) => {
                 ...order, 
                 items: items.rows,
                 payment: paymentResult.rows.length > 0 ? paymentResult.rows[0] : null,
-                buyer: buyerResult.rows.length > 0 ? buyerResult.rows[0] : null,
-                total_amount // tổng cộng thực tế (giá lịch sử)
+                buyer: buyerResult.rows.length > 0 ? buyerResult.rows[0] : null
             });
         }
         
@@ -623,14 +510,9 @@ router.get('/detail/:orderId', async (req, res) => {
         if (order.rows.length === 0) return res.status(404).json({ error: 'Không tìm thấy đơn hàng' });
 
         const items = await pool.query(
-            `SELECT oi.*, 
-                    COALESCE(p.name, oi.product_name, '[Sản phẩm đã bị xóa]') as name,
-                    COALESCE(p.image_url, oi.product_image_url) as image_url,
-                    oi.price_per_item, -- giá lịch sử
-                    p.price as current_price, -- giá hiện tại
-                    p.seller_id
+            `SELECT oi.*, p.name, p.image_url, p.seller_id
              FROM OrderItems oi
-             LEFT JOIN Products p ON oi.product_id = p.id
+             JOIN Products p ON oi.product_id = p.id
              WHERE oi.order_id = $1`,
             [req.params.orderId]
         );
@@ -663,20 +545,13 @@ router.get('/history/:userId', async (req, res) => {
         const orderList = [];
         for (const order of orders.rows) {
             const items = await pool.query(
-                `SELECT oi.*, 
-                        COALESCE(p.name, oi.product_name, '[Sản phẩm đã bị xóa]') as name,
-                        COALESCE(p.image_url, oi.product_image_url) as image_url,
-                        oi.price_per_item, -- giá lịch sử
-                        p.price as current_price, -- giá hiện tại
-                        p.seller_id
+                `SELECT oi.*, p.name, p.image_url, p.seller_id
                  FROM OrderItems oi
-                 LEFT JOIN Products p ON oi.product_id = p.id
+                 JOIN Products p ON oi.product_id = p.id
                  WHERE oi.order_id = $1`,
                 [order.id]
             );
-            // TÍNH LẠI TỔNG CỘNG THEO GIÁ LỊCH SỬ
-            const total_amount = items.rows.reduce((sum, item) => sum + (Number(item.price_per_item) * Number(item.quantity)), 0);
-            orderList.push({ order: { ...order, total_amount }, items: items.rows });
+            orderList.push({ order, items: items.rows });
         }
         res.json(orderList);
     } catch (err) {
@@ -754,7 +629,5 @@ router.get('/by-seller/:sellerId', async (req, res) => {
         res.status(500).json({ error: 'Lỗi lấy đơn hàng của farmer', detail: err.message });
     }
 });
-
-
 
 module.exports = router;
