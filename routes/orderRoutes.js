@@ -19,6 +19,46 @@ const sendRealtimeNotification = (req, userId, notificationData) => {
     }
 };
 
+// NEW: helper để tính trạng thái đơn hàng từ mảng trạng thái sản phẩm
+const computeOrderStatus = (statuses = []) => {
+	// Normalize: chuyển về lowercase, trim, loại null/undefined
+	const normalized = (Array.isArray(statuses) ? statuses : [])
+		.map(s => (s || '').toString().trim().toLowerCase())
+		.filter(s => s !== '');
+
+	// Nếu rỗng => pending
+	if (normalized.length === 0) return 'pending';
+
+	// Nếu có bất kỳ cancelled => ưu tiên cancelled
+	if (normalized.some(s => s === 'cancelled')) return 'cancelled';
+
+	// Loại bỏ cancelled để đánh giá tiến độ (đã xử lý ở trên)
+	const nonCancelled = normalized.filter(s => s !== 'cancelled');
+
+	// Nếu chỉ có nonCancelled = ['pending'] => coi là processing (đồng bộ với shippingRoutes)
+	if (nonCancelled.length > 0 && nonCancelled.every(s => s === 'pending')) {
+		return 'processing';
+	}
+
+	const priority = {
+		'received': 5,
+		'delivered': 4,
+		'shipped': 3,
+		'processing': 2,
+		'pending': 1
+	};
+
+	let max = -Infinity;
+	for (const s of nonCancelled) {
+		const v = (typeof priority[s] === 'number') ? priority[s] : priority['pending'];
+		if (v > max) max = v;
+	}
+	const status = Object.keys(priority).find(k => priority[k] === max) || 'pending';
+
+	console.log('computeOrderStatus -> normalized:', normalized, 'nonCancelled:', nonCancelled, 'result:', status);
+	return status;
+};
+
 // ============================================================
 // 1. TẠO ĐƠN HÀNG MỚI (TÁCH THEO SELLER) - TÍCH HỢP MOMO
 // ============================================================
@@ -227,26 +267,27 @@ router.post('/:userId', async (req, res) => {
 // CẬP NHẬT: API mới - Farmer cập nhật trạng thái sản phẩm CỦA MÌNH
 // ============================================================
 router.put('/:orderId/product/:productId/status', async (req, res) => {
-    const { status, seller_id } = req.body;
-    const { orderId, productId } = req.params;
+	const { status, seller_id } = req.body;
+	const { orderId, productId } = req.params;
 
-    console.log('📥 PUT /:orderId/product/:productId/status called with:', {
-        orderId,
-        productId,
-        status,
-        seller_id
-    });
+	// Normalize incoming status early to avoid undefined / case issues
+	const statusNorm = (typeof status === 'undefined' || status === null) ? null : String(status).trim().toLowerCase();
+	console.log('📥 PUT /:orderId/product/:productId/status called with body:', req.body, 'normalized status:', statusNorm);
 
-    const validStatuses = ['pending', 'processing', 'shipped', 'delivered'];
-    if (!validStatuses.includes(status)) {
-        return res.status(400).json({ error: 'Trạng thái không hợp lệ' });
-    }
+	// Validate presence của status (tránh undefined như log trước)
+	if (!statusNorm) {
+		return res.status(400).json({ error: 'Thiếu trường status trong body' });
+	}
+	const validStatuses = ['pending', 'processing', 'shipped', 'delivered', 'cancelled', 'received'];
+	if (!validStatuses.includes(statusNorm)) {
+		return res.status(400).json({ error: 'Trạng thái không hợp lệ' });
+	}
 
-    const client = await pool.connect();
-    try {
-        await client.query('BEGIN');
+	const client = await pool.connect();
+	try {
+		await client.query('BEGIN');
 
-        // 1. Kiểm tra quyền
+		// 1. Kiểm tra quyền
         const productCheck = await client.query(
             `SELECT p.seller_id, p.name, o.buyer_id 
              FROM Products p
@@ -266,90 +307,85 @@ router.put('/:orderId/product/:productId/status', async (req, res) => {
             throw new Error('Bạn không có quyền cập nhật sản phẩm này');
         }
 
-        // 2. Cập nhật ShippingInfo cho sản phẩm CỤ THỂ
+        // 2. Cập nhật ShippingInfo cho sản phẩm CỤ THỂ (dùng statusNorm)
         const result = await client.query(
             `UPDATE ShippingInfo 
              SET shipping_status = $1, updated_at = NOW()
              WHERE order_id = $2 AND product_id = $3
              RETURNING *`,
-            [status, orderId, productId]
+            [statusNorm, orderId, productId]
         );
 
         if (result.rows.length === 0) {
             throw new Error('Không tìm thấy thông tin vận chuyển');
         }
 
-        // 3. SỬA: Logic tính order_status CHÍNH XÁC (Ưu tiên từ cao xuống thấp)
+        // 3) Tính trạng thái đơn hàng tổng thể sử dụng helper (lấy và normalize bên trong helper)
         const allProducts = await client.query(
             `SELECT shipping_status FROM ShippingInfo WHERE order_id = $1`,
             [orderId]
         );
-
         const allStatuses = allProducts.rows.map(r => r.shipping_status);
-        let orderStatus = 'pending';
+        console.log('📦 Trạng thái các sản phẩm (raw):', allStatuses);
 
-        console.log('📦 Trạng thái tất cả sản phẩm:', allStatuses);
+        const orderStatus = computeOrderStatus(allStatuses);
 
-        // SỬA: Kiểm tra từ trạng thái CAO NHẤT xuống THẤP NHẤT
-        if (allStatuses.every(s => s === 'received')) {
-            orderStatus = 'received'; // Tất cả đã xác nhận
-        } else if (allStatuses.every(s => s === 'delivered')) {
-            orderStatus = 'delivered'; // Tất cả đã giao
-        } else if (allStatuses.some(s => s === 'delivered')) {
-            orderStatus = 'delivered'; // Ít nhất 1 sản phẩm đã giao → Coi như đang giao
-        } else if (allStatuses.some(s => s === 'shipped')) {
-            orderStatus = 'shipped'; // ✅ Ít nhất 1 sản phẩm đã ship → Đơn hàng là "shipped"
-        } else if (allStatuses.some(s => s === 'processing')) {
-            orderStatus = 'processing'; // Có sản phẩm đang xử lý
-        } else if (allStatuses.every(s => s === 'cancelled')) {
-            orderStatus = 'cancelled'; // Tất cả bị hủy
-        }
-
-        // 4. Cập nhật trạng thái tổng thể của đơn hàng
-        await client.query(
-            `UPDATE Orders SET status = $1 WHERE id = $2`,
-            [orderStatus, orderId]
-        );
+        // 4) Cập nhật Orders.status
+        await client.query(`UPDATE Orders SET status = $1 WHERE id = $2`, [orderStatus, orderId]);
 
         console.log(`✅ Order #${orderId} → Status mới: ${orderStatus}`);
 
-        // 5. Gửi thông báo cho BUYER
+        // 5) Thông báo cho buyer (và giữ seller nếu cần)
         const notificationMessages = {
-            'pending': `⏳ Sản phẩm "${product.name}" đang chờ xử lý`,
-            'processing': `📦 Sản phẩm "${product.name}" đang được chuẩn bị`,
-            'shipped': `🚚 Sản phẩm "${product.name}" đã được gửi đi`,
-            'delivered': `📍 Sản phẩm "${product.name}" đã được giao`
+            'pending': `⏳ Sản phẩm đang chờ xử lý`,
+            'processing': `📦 Sản phẩm đang được chuẩn bị`,
+            'shipped': `🚚 Sản phẩm đã được gửi đi`,
+            'delivered': `📍 Sản phẩm đã được giao`,
+            'cancelled': `❌ Sản phẩm đã bị hủy`,
+            'received': `✅ Khách đã nhận hàng`
         };
 
-        const notiResult = await client.query(
-            `INSERT INTO Notifications (user_id, sender_id, type, title, message, order_id, product_id, created_at)
-             VALUES ($1, $2, 'order_tracking', $3, $4, $5, $6, NOW()) RETURNING *`,
-            [
-                product.buyer_id,
-                seller_id,
-                notificationMessages[status] || 'Cập nhật trạng thái',
-                `Đơn hàng #${orderId}: ${notificationMessages[status]}`,
-                orderId,
-                productId
-            ]
+        // Lấy lại thông tin buyer/seller/product để thông báo (giữ an toàn nếu null)
+        const prodInfoRes = await client.query(
+            `SELECT p.name, o.buyer_id FROM OrderItems oi
+			 JOIN Products p ON oi.product_id = p.id
+			 JOIN Orders o ON oi.order_id = o.id
+			 WHERE o.id = $1 AND oi.product_id = $2 LIMIT 1`,
+            [orderId, productId]
         );
+        const prodInfo = prodInfoRes.rows[0] || {};
+        const buyerId = prodInfo.buyer_id || null;
+        const productName = prodInfo.name || (`Sản phẩm #${productId}`);
 
-        sendRealtimeNotification(req, product.buyer_id, notiResult.rows[0]);
+        if (buyerId) {
+            const notiResult = await client.query(
+                `INSERT INTO Notifications (user_id, sender_id, type, title, message, order_id, product_id, created_at)
+				 VALUES ($1, $2, 'order_tracking', $3, $4, $5, $6, NOW()) RETURNING *`,
+                [
+					buyerId,
+					seller_id || null,
+					`Đơn hàng #${orderId}: ${notificationMessages[statusNorm] || 'Cập nhật trạng thái'}`,
+					notificationMessages[statusNorm] ? `${notificationMessages[statusNorm].replace('Sản phẩm', `"${productName}"`)}` : 'Cập nhật trạng thái',
+					orderId,
+					productId
+                ]
+            );
+            sendRealtimeNotification(req, buyerId, notiResult.rows[0]);
+        }
 
-        await client.query('COMMIT');
-        res.json({ 
-            message: 'Cập nhật trạng thái thành công', 
-            shipping_info: result.rows[0],
-            order_status: orderStatus
-        });
-
-    } catch (err) {
-        await client.query('ROLLBACK');
-        console.error('Update Status Error:', err);
-        res.status(500).json({ error: err.message || 'Lỗi cập nhật trạng thái' });
-    } finally {
-        client.release();
-    }
+		await client.query('COMMIT');
+		res.json({
+			message: 'Cập nhật trạng thái thành công',
+			shipping_info: result.rows[0],
+			order_status: orderStatus
+		});
+	} catch (err) {
+		await client.query('ROLLBACK');
+		console.error('Update Status Error:', err);
+		res.status(500).json({ error: err.message || 'Lỗi cập nhật trạng thái' });
+	} finally {
+		client.release();
+	}
 });
 
 // ============================================================

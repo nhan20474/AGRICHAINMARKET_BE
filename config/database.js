@@ -3,11 +3,11 @@ require('dotenv').config();
 
 // Cau hinh ket noi PostgreSQL
 const pool = new Pool({
-  user: process.env.DB_USER || 'postgres',
-  host: process.env.DB_HOST || 'localhost',
-  database: process.env.DB_NAME || 'do_an_chuyen_nganh',
-  password: process.env.DB_PASSWORD,
-  port: process.env.DB_PORT || 5432,
+  user: 'postgres',                    // Ten user PostgreSQL (mac dinh la postgres)
+  host: 'localhost',                   // Dia chi server
+  database: 'do_an_chuyen_nganh',     // Ten database tu pgAdmin cua ban
+  password: '1',      // Mat khau ban dat khi cai PostgreSQL
+  port: 5432,                          // Cong mac dinh cua PostgreSQL
 });
 
 // Kiem tra ket noi
