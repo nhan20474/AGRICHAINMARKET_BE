@@ -11,7 +11,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Build Docker image (pre-deploy check)
         run: docker build -t agrichainmarket-be:ci .
@@ -28,7 +28,6 @@ jobs:
           overwrite: true
           rm: false
           strip_components: 0
-          exclude: ".git,.github,node_modules,.env,uploads"
 
       - name: Restart containers on VPS
         uses: appleboy/ssh-action@v1.2.0
