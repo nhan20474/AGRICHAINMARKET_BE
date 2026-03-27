@@ -43,12 +43,21 @@ jobs:
               echo "Missing /opt/agrichainmarket/.env on VPS"
               exit 1
             fi
-            docker compose down || true
-            docker compose up -d --build
+            if docker compose version >/dev/null 2>&1; then
+              COMPOSE_CMD="docker compose"
+            elif command -v docker-compose >/dev/null 2>&1; then
+              COMPOSE_CMD="docker-compose"
+            else
+              echo "Docker Compose is not installed on VPS"
+              exit 1
+            fi
+
+            $COMPOSE_CMD down || true
+            $COMPOSE_CMD up -d --build
             sleep 5
             if ! curl -fsS http://127.0.0.1:3000/ > /dev/null; then
               echo "Health check failed after deploy"
-              docker compose logs --tail=200
+              $COMPOSE_CMD logs --tail=200
               exit 1
             fi
             docker image prune -f
