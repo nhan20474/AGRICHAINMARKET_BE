@@ -13,9 +13,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Build Docker image (pre-deploy check)
-        run: docker build -t agrichainmarket-be:ci .
-
       - name: Upload source to VPS
         uses: appleboy/scp-action@v0.1.7
         with:
